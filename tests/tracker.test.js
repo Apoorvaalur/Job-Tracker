@@ -1,0 +1,22 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+const source = fs.readFileSync(new URL('../src/services/database.js', import.meta.url), 'utf8').replace("import { supabase } from './auth.js'", '')
+const { summaryCounts, activeCount, allUpcomingInterviews, groupFollowUps, prepareInterview, localDateTime, zonedInstant } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+const rows = ['Applied','Assessment','Screening','Interview Scheduled','Interviewing','On Hold','Offer Received','Rejected','Withdrawn'].map((current_status,index) => ({ id:String(index), company_name:`Company ${index}`, current_status, interviews:[] }))
+test('dashboard total applications includes every status exactly once', () => assert.equal(summaryCounts(rows)['Total Applications'],9))
+test('dashboard applied count', () => assert.equal(summaryCounts(rows).Applied,1))
+test('dashboard assessment/screening count', () => assert.equal(summaryCounts(rows)['Assessments and Screenings'],2))
+test('dashboard interview count counts applications not rounds', () => assert.equal(summaryCounts(rows).Interviews,2))
+test('dashboard offers count', () => assert.equal(summaryCounts(rows).Offers,1))
+test('dashboard rejections count', () => assert.equal(summaryCounts(rows).Rejections,1))
+test('widget active count excludes offers, rejections, withdrawn', () => assert.equal(activeCount(rows),6))
+test('follow-ups group calendar dates and exclude unset dates', () => { const result=groupFollowUps([{company_name:'A',next_follow_up_date:'2026-10-26'},{company_name:'B',next_follow_up_date:'2026-10-27'},{company_name:'C',next_follow_up_date:'2026-10-28'},{company_name:'D',next_follow_up_date:null}],'2026-10-27'); assert.deepEqual(Object.fromEntries(Object.entries(result).map(([k,v])=>[k,v.map(r=>r.company_name)])),{overdue:['A'],today:['B'],upcoming:['C']}) })
+test('upcoming rounds are sorted and preserve multiple interviews per application', () => { const data=[{id:'a',interviews:[{id:'later',interview_status:'Rescheduled',interview_datetime:'2026-10-29T10:00:00Z'},{id:'first',interview_status:'Scheduled',interview_datetime:'2026-10-28T10:00:00Z'},{id:'cancelled',interview_status:'Cancelled',interview_datetime:'2026-10-28T08:00:00Z'},{id:'completed',interview_status:'Completed',interview_datetime:'2026-10-28T09:00:00Z'},{id:'past',interview_status:'Scheduled',interview_datetime:'2026-10-25T09:00:00Z'}]}]; assert.deepEqual(allUpcomingInterviews(data,Date.parse('2026-10-27T00:00:00Z')).map(r=>r.id),['first','later']) })
+test('interviews require a parent application',()=>assert.throws(()=>prepareInterview({}),/Select an application/))
+test('interview optional strings normalize to null with schema defaults',()=> { const value=prepareInterview({application_id:'a',interview_round:'',interviewer_email:' ',feedback:''}); assert.equal(value.interview_round,null);assert.equal(value.interviewer_email,null);assert.equal(value.feedback,null);assert.equal(value.interview_status,'Scheduled');assert.equal(value.interview_outcome,'Pending') })
+test('interview time converts Kolkata wall time to UTC',()=>assert.equal(prepareInterview({application_id:'a',interview_datetime:'2026-10-28T10:15',time_zone:'Asia/Kolkata'}).interview_datetime,'2026-10-28T04:45:00.000Z'))
+test('editing round-trips the interview time zone',()=>assert.equal(localDateTime('2026-10-28T04:45:00Z','Asia/Kolkata'),'2026-10-28T10:15'))
+test('invalid time zone is rejected',()=>assert.throws(()=>zonedInstant('2026-10-28T10:15','invalid/zone'),/valid IANA/))
+test('nonexistent DST wall time is rejected',()=>assert.throws(()=>zonedInstant('2026-03-08T02:30','America/New_York'),/does not exist/))
+test('ambiguous DST wall time is rejected',()=>assert.throws(()=>zonedInstant('2026-11-01T01:30','America/New_York'),/occurs twice/))
